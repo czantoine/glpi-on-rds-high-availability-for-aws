@@ -1,0 +1,160 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'GLPI on RDS High Availability - Antoine Cichowicz | Github: Yris Ops'
+
+Parameters:
+  PublicSubnetA:
+    Type: String
+    Description: Public Subnet A.
+
+  PublicSubnetB:
+    Type: String
+    Description: Public Subnet B.
+
+  PrivateSubnetA:
+    Type:  String
+    Description: Private Subnet A.
+
+  PrivateSubnetB:
+    Type: String
+    Description: Private Subnet B.
+
+  InternetGateway:
+    Type: String
+    Description: Internet Gateway.
+
+  VPC:
+    Type: String
+    Description: VPC Id.
+
+  EC2InstanceType:
+    Type: String
+    Default: t2.micro
+    AllowedValues: [t2.micro, t2.small, t2.medium, t2.large]
+    ConstraintDescription: Must be a valid EC2 instance type.
+
+  EC2InstanceProfile:
+    Type: String
+    Description: Instance profile for Systems Manager.
+
+  KeyPair:
+    Type: String
+    Description: Key Pair.
+  
+Resources:
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      SubnetId:
+        !If
+        - IsPrivateA
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      ImageId: ami-09cd747c78a9add63
+      KeyName: !Ref KeyPair
+      SecurityGroupIds:
+        - !Ref EC2InstanceSecurityGroup
+      Tags:
+        - Key: Name
+          Value: "GLPI-EC2"
+
+  RDSSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: "subnetgroup"
+      DBSubnetGroupDescription: Private subnets for RDS
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+
+  EC2InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow inbound traffic from ALB
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  InstanceSecurityGroupIngress:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    DependsOn: "EC2InstanceSecurityGroup"
+    Properties:
+      GroupId: !Ref "EC2InstanceSecurityGroup"
+      IpProtocol: "tcp"
+      FromPort: "0"
+      ToPort: "3306"
+      SourceSecurityGroupId: !Ref "EC2InstanceSecurityGroup"
+
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: MariaDB
+      DBInstanceIdentifier: glpi-db
+      DBName: glpi
+      VPCSecurityGroups:
+        - !Ref EC2InstanceSecurityGroup
+      DBInstanceClass: db.t2.micro
+      AllocatedStorage: 20
+      MasterUsername: user
+      MasterUserPassword: MySuperGlpi2022
+      StorageType: gp2
+      MultiAZ: true
+      DBSubnetGroupName: !Ref RDSSubnetGroup
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow inbound traffic from the internet
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      TargetType: instance
+      Targets:
+        - Id: !Ref EC2Instance
+          Port: 80
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+Conditions:
+  IsPrivateA:
+    !Equals
+    - !Ref AWS::Region
+    - us-east-1
+
+Outputs:
+  GLPIEnpoint:
+    Description: GLPI MariaDB Endpoint
+    Value: !GetAtt [RDSInstance, Endpoint.Address]
