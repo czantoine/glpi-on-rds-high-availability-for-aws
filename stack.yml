@@ -45,7 +45,7 @@ Resources:
   EC2Instance:
     Type: AWS::EC2::Instance
     Properties:
-      InstanceType: t2.micro
+      InstanceType: !Ref EC2InstanceType
       IamInstanceProfile: !Ref EC2InstanceProfile
       SubnetId:
         !If
